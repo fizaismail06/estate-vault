@@ -161,8 +161,9 @@ export default function Settings() {
       <div className="card mb-4">
         <h2 className="font-display text-lg mb-2">Manual export</h2>
         <p className="text-sm text-vault-muted mb-1">
-          For testing, or if you want to send a copy to your next-of-kin right now regardless of
-          check-in status.
+          Sends your next-of-kin a single file right now, as an email attachment — the same file
+          they'd get automatically if you missed a check-in. They open it in any browser, type the
+          Master Password, and see everything. No sign-in, no visiting this app.
         </p>
         {lastExportAt && (
           <p className="text-xs text-vault-muted mb-3">
