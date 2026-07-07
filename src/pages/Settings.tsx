@@ -12,6 +12,9 @@ export default function Settings() {
   const [newEmail, setNewEmail] = useState('');
   const [savingEmails, setSavingEmails] = useState(false);
   const [lastExportAt, setLastExportAt] = useState<string | null>(null);
+  const [intervalDays, setIntervalDays] = useState(30);
+  const [graceDays, setGraceDays] = useState(14);
+  const [savingSchedule, setSavingSchedule] = useState(false);
 
   useEffect(() => {
     if (!user) return;
@@ -20,6 +23,8 @@ export default function Settings() {
       if (snap.exists()) {
         setNotifyEmails(snap.data().notifyEmails || []);
         setLastExportAt(snap.data().lastExportAt || null);
+        setIntervalDays(snap.data().checkInIntervalDays || 30);
+        setGraceDays(snap.data().gracePeriodDays || 14);
       }
     })();
   }, [user]);
@@ -46,22 +51,34 @@ export default function Settings() {
     saveEmails(notifyEmails.filter((e) => e !== email));
   }
 
+  async function saveSchedule() {
+    if (!user) return;
+    setSavingSchedule(true);
+    try {
+      await updateDoc(doc(db, 'users', user.uid), {
+        checkInIntervalDays: intervalDays,
+        gracePeriodDays: graceDays
+      });
+    } finally {
+      setSavingSchedule(false);
+    }
+  }
+
   async function triggerExport() {
     setExporting(true);
     setExportMsg('');
     try {
       const functions = getFunctions(app);
       const generate = httpsCallable(functions, 'generateSealedExportNow');
-      const result: any = await generate();
+      await generate();
       setExportMsg(
         notifyEmails.length
-          ? `Export generated and emailed to: ${notifyEmails.join(', ')}`
-          : 'Export generated. Add at least one email below so a copy gets sent automatically.'
+          ? `Export generated and emailed now to: ${notifyEmails.join(', ')}`
+          : 'Export generated. Add an email below to actually send a copy.'
       );
       setLastExportAt(new Date().toISOString());
-      void result;
     } catch (err) {
-      setExportMsg('Could not generate export right now. It will still run on the weekly schedule.');
+      setExportMsg('Could not generate export right now.');
     } finally {
       setExporting(false);
     }
@@ -73,12 +90,44 @@ export default function Settings() {
       <p className="text-sm text-vault-muted mb-6">Signed in as {user?.email}</p>
 
       <div className="card mb-4">
-        <h2 className="font-display text-lg mb-2">Notify by email</h2>
+        <h2 className="font-display text-lg mb-2">Check-in schedule</h2>
         <p className="text-sm text-vault-muted mb-3">
-          Add the email address(es) of your next of kin, executor, or lawyer. Every time a sealed
-          export is generated (weekly, or on demand below), they'll each get an email with a link
-          to the encrypted backup PDF. The file is still fully encrypted — this just makes sure a
-          copy reaches them without you having to do anything.
+          If you don't check in (Dashboard → "I'm okay") within the interval below, you'll get a
+          reminder email. If you still haven't checked in after the grace period on top of that,
+          your next-of-kin will automatically be emailed the sealed export — and only then.
+        </p>
+        <div className="grid grid-cols-2 gap-3 mb-3">
+          <div>
+            <label className="label">Check-in every (days)</label>
+            <input
+              className="input"
+              type="number"
+              min={1}
+              value={intervalDays}
+              onChange={(e) => setIntervalDays(Number(e.target.value))}
+            />
+          </div>
+          <div>
+            <label className="label">Grace period after that (days)</label>
+            <input
+              className="input"
+              type="number"
+              min={1}
+              value={graceDays}
+              onChange={(e) => setGraceDays(Number(e.target.value))}
+            />
+          </div>
+        </div>
+        <button onClick={saveSchedule} disabled={savingSchedule} className="btn-secondary">
+          {savingSchedule ? 'Saving…' : 'Save schedule'}
+        </button>
+      </div>
+
+      <div className="card mb-4">
+        <h2 className="font-display text-lg mb-2">Notify by email (next of kin)</h2>
+        <p className="text-sm text-vault-muted mb-3">
+          These addresses only receive the sealed export automatically if you miss a check-in
+          past the grace period above. They will not receive anything on a regular schedule.
         </p>
 
         {notifyEmails.length > 0 && (
@@ -110,9 +159,10 @@ export default function Settings() {
       </div>
 
       <div className="card mb-4">
-        <h2 className="font-display text-lg mb-2">Sealed export</h2>
+        <h2 className="font-display text-lg mb-2">Manual export</h2>
         <p className="text-sm text-vault-muted mb-1">
-          A weekly encrypted PDF is generated automatically and emailed to everyone listed above.
+          For testing, or if you want to send a copy to your next-of-kin right now regardless of
+          check-in status.
         </p>
         {lastExportAt && (
           <p className="text-xs text-vault-muted mb-3">
@@ -120,7 +170,7 @@ export default function Settings() {
           </p>
         )}
         <button onClick={triggerExport} disabled={exporting} className="btn-secondary">
-          {exporting ? 'Generating…' : 'Generate & send export now'}
+          {exporting ? 'Generating…' : 'Generate & send now'}
         </button>
         {exportMsg && <p className="text-sm text-vault-muted mt-3">{exportMsg}</p>}
       </div>
@@ -132,7 +182,7 @@ export default function Settings() {
           <li>Lawyer instructed on when it may be released (e.g. upon proof of death / probate).</li>
           <li>Wasiat references "digital estate access" held with the lawyer.</li>
           <li>Executor and family know the lawyer's contact details — see Trusted Contacts.</li>
-          <li>Next-of-kin emails added above so they automatically receive the sealed backup.</li>
+          <li>Check-in schedule above reflects how often you'll realistically use this app.</li>
         </ul>
       </div>
 
