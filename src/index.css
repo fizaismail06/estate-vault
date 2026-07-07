@@ -1,0 +1,47 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+html, body, #root {
+  height: 100%;
+}
+
+body {
+  @apply bg-vault-bg text-vault-text font-body antialiased;
+}
+
+::selection {
+  @apply bg-vault-gold/30;
+}
+
+.card {
+  @apply bg-vault-surface border border-vault-border rounded-xl p-4;
+}
+
+.input {
+  @apply w-full bg-vault-surfaceAlt border border-vault-border rounded-lg px-3 py-2
+    text-vault-text placeholder:text-vault-muted
+    focus:outline-none focus:ring-1 focus:ring-vault-gold focus:border-vault-gold;
+}
+
+.label {
+  @apply text-xs uppercase tracking-wide text-vault-muted mb-1 block;
+}
+
+.btn-primary {
+  @apply bg-vault-gold text-vault-bg font-medium rounded-lg px-4 py-2
+    hover:bg-vault-goldDim transition-colors;
+}
+
+.btn-secondary {
+  @apply bg-vault-surfaceAlt border border-vault-border text-vault-text rounded-lg px-4 py-2
+    hover:border-vault-gold/50 transition-colors;
+}
+
+.btn-danger {
+  @apply text-vault-danger hover:text-red-400 transition-colors;
+}
+
+.section-title {
+  @apply font-display text-xl text-vault-text tracking-tight;
+}

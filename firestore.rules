@@ -1,0 +1,38 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Top-level user document: email, salt, verifier (verifier + salt are NOT secret —
+    // they cannot be used to decrypt data without the actual Master Password).
+    match /users/{userId} {
+      allow read, write: if request.auth != null && request.auth.uid == userId;
+
+      // All encrypted record subcollections: only the owning user can read/write.
+      // Firestore only ever sees the `payload` ciphertext field.
+      match /accounts/{docId} {
+        allow read, write: if request.auth != null && request.auth.uid == userId;
+      }
+      match /investments/{docId} {
+        allow read, write: if request.auth != null && request.auth.uid == userId;
+      }
+      match /insurance/{docId} {
+        allow read, write: if request.auth != null && request.auth.uid == userId;
+      }
+      match /trustedContacts/{docId} {
+        allow read, write: if request.auth != null && request.auth.uid == userId;
+      }
+      match /documents/{docId} {
+        allow read, write: if request.auth != null && request.auth.uid == userId;
+      }
+      match /wasiat/{docId} {
+        allow read, write: if request.auth != null && request.auth.uid == userId;
+      }
+    }
+
+    // Deny everything else by default
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
