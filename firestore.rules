@@ -3,30 +3,52 @@ rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
 
-    // Top-level user document: email, salt, verifier (verifier + salt are NOT secret —
-    // they cannot be used to decrypt data without the actual Master Password).
-    match /users/{userId} {
-      allow read, write: if request.auth != null && request.auth.uid == userId;
+    function isOwner(userId) {
+      return request.auth != null && request.auth.uid == userId;
+    }
 
-      // All encrypted record subcollections: only the owning user can read/write.
-      // Firestore only ever sees the `payload` ciphertext field.
-      match /accounts/{docId} {
-        allow read, write: if request.auth != null && request.auth.uid == userId;
-      }
-      match /investments/{docId} {
-        allow read, write: if request.auth != null && request.auth.uid == userId;
-      }
-      match /insurance/{docId} {
-        allow read, write: if request.auth != null && request.auth.uid == userId;
-      }
-      match /trustedContacts/{docId} {
-        allow read, write: if request.auth != null && request.auth.uid == userId;
-      }
-      match /documents/{docId} {
-        allow read, write: if request.auth != null && request.auth.uid == userId;
-      }
-      match /wasiat/{docId} {
-        allow read, write: if request.auth != null && request.auth.uid == userId;
+    function isRecordCollection(c) {
+      return c in ['accounts', 'investments', 'insurance', 'trustedContacts', 'documents', 'wasiat'];
+    }
+
+    match /users/{userId} {
+      allow read: if isOwner(userId);
+
+      // First-time vault setup: salt + verifier are written once and never changed.
+      allow create: if isOwner(userId)
+        && request.resource.data.keys().hasOnly(['email', 'salt', 'verifier', 'createdAt'])
+        && request.resource.data.salt is string
+        && request.resource.data.verifier is string;
+
+      // The signed-in owner may only touch these fields from the browser.
+      // salt, verifier, email, lastExportAt are immutable from the client
+      // (Cloud Functions use the Admin SDK and bypass these rules).
+      allow update: if isOwner(userId)
+        && request.resource.data.diff(resource.data).affectedKeys()
+             .hasOnly(['lastCheckIn', 'status', 'notifyEmails', 'checkInIntervalDays', 'gracePeriodDays'])
+        // the browser may only ever set status back to 'active' (the check-in button)
+        && (!('status' in request.resource.data.diff(resource.data).affectedKeys())
+            || request.resource.data.status == 'active')
+        && request.resource.data.get('notifyEmails', []) is list
+        && request.resource.data.get('notifyEmails', []).size() <= 5
+        && request.resource.data.get('checkInIntervalDays', 30) is int
+        && request.resource.data.get('checkInIntervalDays', 30) >= 1
+        && request.resource.data.get('checkInIntervalDays', 30) <= 365
+        && request.resource.data.get('gracePeriodDays', 14) is int
+        && request.resource.data.get('gracePeriodDays', 14) >= 1
+        && request.resource.data.get('gracePeriodDays', 14) <= 90;
+
+      allow delete: if false;
+
+      // Encrypted records: only the six known collections, and only { payload, updatedAt }.
+      match /{colName}/{docId} {
+        allow read, delete: if isOwner(userId) && isRecordCollection(colName);
+        allow create, update: if isOwner(userId)
+          && isRecordCollection(colName)
+          && request.resource.data.keys().hasOnly(['payload', 'updatedAt'])
+          && request.resource.data.payload is string
+          && request.resource.data.payload.size() < 100000
+          && request.resource.data.updatedAt is string;
       }
     }
 

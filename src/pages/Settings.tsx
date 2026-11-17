@@ -15,6 +15,8 @@ export default function Settings() {
   const [intervalDays, setIntervalDays] = useState(30);
   const [graceDays, setGraceDays] = useState(14);
   const [savingSchedule, setSavingSchedule] = useState(false);
+  const [downloading, setDownloading] = useState(false);
+  const [downloadMsg, setDownloadMsg] = useState('');
 
   useEffect(() => {
     if (!user) return;
@@ -77,10 +79,47 @@ export default function Settings() {
           : 'Export generated. Add an email below to actually send a copy.'
       );
       setLastExportAt(new Date().toISOString());
-    } catch (err) {
-      setExportMsg('Could not generate export right now.');
+    } catch (err: any) {
+      if (err?.code === 'functions/resource-exhausted') {
+        setExportMsg('Please wait a few minutes before sending another export.');
+      } else if (err?.code === 'functions/permission-denied') {
+        setExportMsg('This account is not allowed to send exports.');
+      } else {
+        setExportMsg('Could not generate export right now.');
+      }
     } finally {
       setExporting(false);
+    }
+  }
+
+  async function downloadBackup() {
+    setDownloading(true);
+    setDownloadMsg('');
+    try {
+      const functions = getFunctions(app);
+      const fetchBackup = httpsCallable<unknown, { filename: string; html: string }>(
+        functions,
+        'downloadBackup'
+      );
+      const { data } = await fetchBackup();
+      const blob = new Blob([data.html], { type: 'text/html' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = data.filename;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+      setDownloadMsg(`Saved ${data.filename}. Open it in a browser and enter the Master Password to check it.`);
+    } catch (err: any) {
+      if (err?.code === 'functions/permission-denied') {
+        setDownloadMsg('This account is not allowed to download backups.');
+      } else {
+        setDownloadMsg('Could not download the backup right now.');
+      }
+    } finally {
+      setDownloading(false);
     }
   }
 
@@ -174,6 +213,19 @@ export default function Settings() {
           {exporting ? 'Generating…' : 'Generate & send now'}
         </button>
         {exportMsg && <p className="text-sm text-vault-muted mt-3">{exportMsg}</p>}
+      </div>
+
+      <div className="card mb-4">
+        <h2 className="font-display text-lg mb-2">Download backup</h2>
+        <p className="text-sm text-vault-muted mb-3">
+          Saves a fresh copy of the backup file to this device, without emailing anyone. It's the
+          same file your next-of-kin would receive: still encrypted, and opened with the Master
+          Password. Good for a copy to keep with your lawyer.
+        </p>
+        <button onClick={downloadBackup} disabled={downloading} className="btn-secondary">
+          {downloading ? 'Preparing…' : 'Download backup (.html)'}
+        </button>
+        {downloadMsg && <p className="text-sm text-vault-muted mt-3">{downloadMsg}</p>}
       </div>
 
       <div className="card mb-4">

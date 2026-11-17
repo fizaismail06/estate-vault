@@ -1,0 +1,11 @@
+rules_version = '2';
+
+// Exports are written and read only by Cloud Functions (Admin SDK bypasses these rules).
+// No browser client should ever access Storage directly.
+service firebase.storage {
+  match /b/{bucket}/o {
+    match /{allPaths=**} {
+      allow read, write: if false;
+    }
+  }
+}

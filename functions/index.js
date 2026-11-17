@@ -1,5 +1,5 @@
 const { onSchedule } = require('firebase-functions/v2/scheduler');
-const { onCall } = require('firebase-functions/v2/https');
+const { onCall, HttpsError } = require('firebase-functions/v2/https');
 const { defineSecret } = require('firebase-functions/params');
 const admin = require('firebase-admin');
 const { getStorage } = require('firebase-admin/storage');
@@ -14,6 +14,30 @@ const COLLECTIONS = ['accounts', 'investments', 'insurance', 'trustedContacts', 
 // firebase functions:secrets:set SMTP_PASS
 const SMTP_USER = defineSecret('SMTP_USER');
 const SMTP_PASS = defineSecret('SMTP_PASS');
+// Only this account may use the functions (stops strangers who self-register via the public API key).
+//   firebase functions:secrets:set OWNER_EMAIL
+const OWNER_EMAIL = defineSecret('OWNER_EMAIL');
+
+const EXPORT_COOLDOWN_MS = 10 * 60 * 1000; // minimum gap between manual exports
+const MAX_RECIPIENTS = 5;
+
+function escapeHtml(str) {
+  return String(str).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+
+function isOwnerEmail(email) {
+  return !!email && email.trim().toLowerCase() === OWNER_EMAIL.value().trim().toLowerCase();
+}
+
+/** Keeps only well-formed single addresses (no commas/whitespace/newlines), de-duplicated, capped. */
+function sanitizeRecipients(list) {
+  const re = /^[^\s,;<>"']+@[^\s,;<>"']+\.[^\s,;<>"']+$/;
+  const clean = [];
+  for (const e of Array.isArray(list) ? list : []) {
+    if (typeof e === 'string' && re.test(e.trim()) && !clean.includes(e.trim())) clean.push(e.trim());
+  }
+  return clean.slice(0, MAX_RECIPIENTS);
+}
 
 const LABELS = {
   accounts: 'Bank Accounts',
@@ -48,6 +72,7 @@ async function buildSelfContainedFile(uid, userData) {
 <html lang="en">
 <head>
 <meta charset="UTF-8" />
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'" />
 <title>Estate Vault — Sealed Backup</title>
 <style>
   body { font-family: -apple-system, Arial, sans-serif; background:#0f1115; color:#e8eaed; margin:0; padding:24px; }
@@ -71,7 +96,7 @@ async function buildSelfContainedFile(uid, userData) {
 <body>
 <div class="wrap">
   <h1>Estate Vault — Sealed Backup</h1>
-  <p class="sub">For ${userData.email}. Generated ${generatedAt}.</p>
+  <p class="sub">For ${escapeHtml(userData.email)}. Generated ${generatedAt}.</p>
 
   <div class="card" id="unlock-card">
     <p style="font-size:14px; margin-top:0;">
@@ -222,11 +247,12 @@ async function sendReminderToOwner(userEmail) {
 
 /** Emails the self-contained HTML file as a direct attachment — no link, no login, no app visit. */
 async function sendExportToContacts(toEmails, userEmail, html) {
-  if (!toEmails.length) return;
+  const recipients = sanitizeRecipients(toEmails);
+  if (!recipients.length) return;
   const transporter = getTransporter();
   await transporter.sendMail({
     from: `Estate Vault <${SMTP_USER.value()}>`,
-    to: toEmails.join(','),
+    to: recipients.join(','),
     subject: `Estate Vault — sealed backup for ${userEmail}`,
     text:
       `You are listed as a trusted contact in ${userEmail}'s Estate Vault.\n\n` +
@@ -252,13 +278,14 @@ async function sendExportToContacts(toEmails, userEmail, html) {
  * is generated and emailed AS AN ATTACHMENT to next-of-kin. Nothing is sent otherwise.
  */
 exports.checkDeadManSwitch = onSchedule(
-  { schedule: 'every 24 hours', secrets: [SMTP_USER, SMTP_PASS] },
+  { schedule: 'every 24 hours', secrets: [SMTP_USER, SMTP_PASS, OWNER_EMAIL] },
   async () => {
     const usersSnap = await db.collection('users').get();
     const now = Date.now();
 
     for (const userDoc of usersSnap.docs) {
       const user = userDoc.data();
+      if (!isOwnerEmail(user.email)) continue; // ignore any non-owner accounts
       if (!user.lastCheckIn) continue;
 
       const intervalDays = user.checkInIntervalDays || 30;
@@ -284,15 +311,50 @@ exports.checkDeadManSwitch = onSchedule(
   }
 );
 
-/** Manual, on-demand export from Settings. Always emails the attachment immediately. */
+/** Manual, on-demand export from Settings. Owner only, rate-limited. */
 exports.generateSealedExportNow = onCall(
-  { secrets: [SMTP_USER, SMTP_PASS] },
+  { secrets: [SMTP_USER, SMTP_PASS, OWNER_EMAIL] },
   async (request) => {
-    if (!request.auth) throw new Error('Must be signed in.');
-    const result = await generateExportOnly(request.auth.uid);
+    if (!request.auth) throw new HttpsError('unauthenticated', 'Must be signed in.');
+    if (!isOwnerEmail(request.auth.token.email)) {
+      throw new HttpsError('permission-denied', 'Not allowed.');
+    }
+
+    const uid = request.auth.uid;
+    const snap = await db.collection('users').doc(uid).get();
+    const last = snap.exists && snap.data().lastExportAt ? new Date(snap.data().lastExportAt).getTime() : 0;
+    if (Date.now() - last < EXPORT_COOLDOWN_MS) {
+      throw new HttpsError('resource-exhausted', 'Please wait a few minutes before sending another export.');
+    }
+
+    const result = await generateExportOnly(uid);
     if (result) {
       await sendExportToContacts(result.userData.notifyEmails || [], result.userData.email, result.html);
     }
     return { sent: !!result };
+  }
+);
+
+/**
+ * Owner-only download of a fresh copy of the backup file. Nothing is saved to Storage
+ * and nothing is emailed: the file is built from the current (still-encrypted) data and
+ * returned to the browser, which saves it locally. This replaces needing a Storage link.
+ */
+exports.downloadBackup = onCall(
+  { secrets: [OWNER_EMAIL] },
+  async (request) => {
+    if (!request.auth) throw new HttpsError('unauthenticated', 'Must be signed in.');
+    if (!isOwnerEmail(request.auth.token.email)) {
+      throw new HttpsError('permission-denied', 'Not allowed.');
+    }
+
+    const snap = await db.collection('users').doc(request.auth.uid).get();
+    if (!snap.exists || !snap.data().salt) {
+      throw new HttpsError('failed-precondition', 'Vault has not been set up yet.');
+    }
+
+    const html = await buildSelfContainedFile(request.auth.uid, snap.data());
+    const stamp = new Date().toISOString().slice(0, 10);
+    return { filename: `estate-vault-backup-${stamp}.html`, html };
   }
 );
