@@ -1,4 +1,4 @@
-import { createContext, useContext, useEffect, useState, ReactNode } from 'react';
+import { createContext, useContext, useEffect, useRef, useState, ReactNode } from 'react';
 import {
   onAuthStateChanged,
   signInWithEmailAndPassword,
@@ -16,6 +16,7 @@ interface AuthContextValue {
   masterPassword: string | null; // held in memory ONLY, never persisted
   salt: string | null;
   hasSetUpVault: boolean;
+  idleLocked: boolean; // true when the vault locked itself after inactivity
   login: (email: string, password: string) => Promise<void>;
   logout: () => Promise<void>;
   setupVault: (masterPassword: string) => Promise<void>;
@@ -25,6 +26,10 @@ interface AuthContextValue {
 
 const AuthContext = createContext<AuthContextValue | undefined>(undefined);
 
+// The vault locks itself (and forgets the Master Password) after this long with no activity.
+const IDLE_LOCK_MS = 5 * 60 * 1000;
+const ACTIVITY_EVENTS = ['mousemove', 'mousedown', 'keydown', 'touchstart', 'scroll', 'click'] as const;
+
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
   const [loading, setLoading] = useState(true);
@@ -32,6 +37,35 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [salt, setSalt] = useState<string | null>(null);
   const [verifier, setVerifier] = useState<string | null>(null);
   const [hasSetUpVault, setHasSetUpVault] = useState(false);
+  const [idleLocked, setIdleLocked] = useState(false);
+  const lastActivity = useRef(Date.now());
+
+  // Idle auto-lock. Compares timestamps (not a single long timer) so a laptop that slept,
+  // or a tab that sat in the background, is still locked as soon as it wakes up.
+  useEffect(() => {
+    if (!masterPassword) return;
+    lastActivity.current = Date.now();
+
+    const markActive = () => {
+      lastActivity.current = Date.now();
+    };
+    const checkIdle = () => {
+      if (Date.now() - lastActivity.current >= IDLE_LOCK_MS) {
+        setMasterPassword(null);
+        setIdleLocked(true);
+      }
+    };
+
+    ACTIVITY_EVENTS.forEach((e) => window.addEventListener(e, markActive, { passive: true }));
+    document.addEventListener('visibilitychange', checkIdle);
+    const timer = window.setInterval(checkIdle, 15_000);
+
+    return () => {
+      ACTIVITY_EVENTS.forEach((e) => window.removeEventListener(e, markActive));
+      document.removeEventListener('visibilitychange', checkIdle);
+      window.clearInterval(timer);
+    };
+  }, [masterPassword]);
 
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, async (u) => {
@@ -60,6 +94,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   async function logout() {
     setMasterPassword(null);
+    setIdleLocked(false);
     await signOut(auth);
   }
 
@@ -84,11 +119,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   async function unlockVault(mp: string): Promise<boolean> {
     if (!salt || !verifier) return false;
     const ok = await checkVerifier(mp, salt, verifier);
-    if (ok) setMasterPassword(mp);
+    if (ok) {
+      setIdleLocked(false);
+      setMasterPassword(mp);
+    }
     return ok;
   }
 
   function lockVault() {
+    setIdleLocked(false); // manual lock: no "locked for inactivity" notice
     setMasterPassword(null);
   }
 
@@ -99,6 +138,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     masterPassword,
     salt,
     hasSetUpVault,
+    idleLocked,
     login,
     logout,
     setupVault,

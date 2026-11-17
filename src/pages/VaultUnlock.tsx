@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { useAuth } from '../context/AuthContext';
 
 export default function VaultUnlock() {
-  const { unlockVault, logout } = useAuth();
+  const { unlockVault, logout, idleLocked } = useAuth();
   const [mp, setMp] = useState('');
   const [error, setError] = useState('');
   const [checking, setChecking] = useState(false);
@@ -23,6 +23,11 @@ export default function VaultUnlock() {
     <div className="h-screen flex items-center justify-center bg-vault-bg p-4">
       <form onSubmit={handleSubmit} className="card w-full max-w-sm">
         <div className="font-display text-2xl text-vault-gold mb-1">Unlock Estate Vault</div>
+        {idleLocked && (
+          <p className="text-sm text-vault-gold mb-3">
+            Locked after 5 minutes of inactivity.
+          </p>
+        )}
         <p className="text-sm text-vault-muted mb-5">
           Enter your Master Password to decrypt your entries for this session.
         </p>
